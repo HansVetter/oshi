@@ -8,7 +8,7 @@
         <version>6.4.2-SNAPSHOT</version>
     </parent>
 
-    <artifactId>oshi-core</artifactId>
+    <artifactId>oshi-core-avantra</artifactId>
     <packaging>jar</packaging>
 
     <name>oshi-core</name>
