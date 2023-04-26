@@ -21,7 +21,7 @@
     <dependencies>
         <dependency>
             <groupId>${project.groupId}</groupId>
-            <artifactId>oshi-core</artifactId>
+            <artifactId>oshi-core-avantra</artifactId>
             <version>${project.version}</version>
         </dependency>
         <dependency>
