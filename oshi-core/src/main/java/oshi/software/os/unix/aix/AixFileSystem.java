@@ -10,6 +10,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 import oshi.annotation.concurrent.ThreadSafe;
 import oshi.software.common.AbstractFileSystem;
@@ -45,6 +46,8 @@ public class AixFileSystem extends AbstractFileSystem {
         return getFileStoreMatching(null, localOnly);
     }
 
+    static final Pattern FS_PATTERN = Pattern.compile("^(?:[\\w\\.]+:)?\\/");
+
     // Called by AixOSFileStore
     static List<OSFileStore> getFileStoreMatching(String nameToMatch) {
         return getFileStoreMatching(nameToMatch, false);
@@ -56,26 +59,49 @@ public class AixFileSystem extends AbstractFileSystem {
         // Get inode usage data
         Map<String, Long> inodeFreeMap = new HashMap<>();
         Map<String, Long> inodeTotalMap = new HashMap<>();
-        String command = "df -i" + (localOnly ? " -l" : "");
+        // jna doesn't provide LibC, so we go for shell commands...
+        String command = "df -F %l %n" + (localOnly ? " -T local" : "");
+        List<String> dfResult = ExecutingCommand.runNative(command);
+
         for (String line : ExecutingCommand.runNative(command)) {
             /*- Sample Output:
-             $ df -i
-            Filesystem            Inodes   IUsed   IFree IUse% Mounted on
-            /dev/hd4               75081   16741   58340   23% /
-            /dev/hd2              269640   43104  226536   16% /usr
-            /dev/hd9var            43598    1370   42228    4% /var
-            /dev/hd3               79936     386   79550    1% /tmp
-            /dev/hd11admin         29138       7   29131    1% /admin
-            /proc                      0       0       0    -  /proc
-            /dev/hd10opt           47477    4232   43245    9% /opt
-            /dev/livedump          58204       4   58200    1% /var/adm/ras/livedump
-            /dev/fslv00          12419240  292668 12126572    3% /home
-            */
-            if (line.startsWith("/")) {
+             root@sovma473:/$ df -F %l %n -T local
+            Filesystem    512-blocks     Iused    Ifree
+            /dev/hd4         1441792    18137    58071
+            /dev/hd2         5636096    44046   102455
+            /dev/hd9var      1179648     9919    28280
+            /dev/hd3          393216      179    39126
+            /dev/hd1          131072       62     1003
+            /dev/hd11admin     262144        7    29131
+            /dev/hd10opt      917504      412    89642
+            /dev/livedump     524288        4    58200
+            /dev/resgrp473lv   83886080    28800  8358964
+
+            root@sovma473:/$ df -F %l %n
+            Filesystem    512-blocks     Iused    Ifree
+            /dev/hd4         1441792    18137    58069
+            /dev/hd2         5636096    44046   102455
+            /dev/hd9var      1179648     9919    28280
+            /dev/hd3          393216      179    39126
+            /dev/hd1          131072       62     1003
+            /dev/hd11admin     262144        7    29131
+            /proc                  -        -        -
+            /dev/hd10opt      917504      412    89642
+            /dev/livedump     524288        4    58200
+            /dev/resgrp473lv   83886080    28799  8358449
+            192.168.253.80:/usr/sys/inst.images/toolbox_20110809   461373440    84670  5662375
+            192.168.253.80:/usr/sys/inst.images/toolbox_20131113   461373440    84670  5662375
+            192.168.253.80:/usr/sys/inst.images/toolbox_20151220   461373440    84670  5662375
+            192.168.253.80:/usr/sys/inst.images/mozilla_3513   461373440    84670  5662375
+             */
+            if (FS_PATTERN.matcher(line).find()) {
                 String[] split = ParseUtil.whitespaces.split(line);
-                if (split.length > 5) {
-                    inodeTotalMap.put(split[0], ParseUtil.parseLongOrDefault(split[1], 0L));
-                    inodeFreeMap.put(split[0], ParseUtil.parseLongOrDefault(split[3], 0L));
+                if (split.length >= 3) {
+                    // get the last 2 columns, that's where we told df to provide used and free values
+                    long used = ParseUtil.parseLongOrDefault(split[split.length - 2], 0L);
+                    long free = ParseUtil.parseLongOrDefault(split[split.length - 1], 0L);
+                    inodeTotalMap.put(split[0], used + free);
+                    inodeFreeMap.put(split[0], free);
                 }
             }
         }

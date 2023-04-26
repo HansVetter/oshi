@@ -6,6 +6,7 @@ package oshi.software.os.linux;
 
 import java.io.File;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.PathMatcher;
@@ -14,6 +15,8 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -55,6 +58,8 @@ public class LinuxFileSystem extends AbstractFileSystem {
             .loadAndParseFileSystemConfig(OSHI_LINUX_FS_VOLUME_INCLUDES);
 
     private static final String UNICODE_SPACE = "\\040";
+
+    private static final boolean DO_NFS_CHECK = System.getProperty("filesystem.checknfs", "1").equals("1");
 
     @Override
     public List<OSFileStore> getFileStores(boolean localOnly) {
@@ -172,41 +177,64 @@ public class LinuxFileSystem extends AbstractFileSystem {
                     LOG.warn("Couldn't access symbolic path  {}. {}", link, e.getMessage());
                 }
             }
-
+            // check reachability before calling statvfs
+            boolean callStatvfs = true;
+            if(NETWORK_FS_TYPES.contains(type) && DO_NFS_CHECK) {
+                try {
+                    checkNfsPing(options);
+                } catch (IOException e) {
+                    description = "Network Disk [Error: " + e.getMessage() + "]";
+                    callStatvfs = false;
+                }
+            }
             long totalInodes = 0L;
             long freeInodes = 0L;
             long totalSpace = 0L;
             long usableSpace = 0L;
             long freeSpace = 0L;
-
-            try {
-                LibC.Statvfs vfsStat = new LibC.Statvfs();
-                if (0 == LibC.INSTANCE.statvfs(path, vfsStat)) {
-                    totalInodes = vfsStat.f_files.longValue();
-                    freeInodes = vfsStat.f_ffree.longValue();
-                    // Per stavfs, these units are in fragments
-                    totalSpace = vfsStat.f_blocks.longValue() * vfsStat.f_frsize.longValue();
-                    usableSpace = vfsStat.f_bavail.longValue() * vfsStat.f_frsize.longValue();
-                    freeSpace = vfsStat.f_bfree.longValue() * vfsStat.f_frsize.longValue();
-                } else {
-                    LOG.warn("Failed to get information to use statvfs. path: {}, Error code: {}", path,
-                            Native.getLastError());
+            if(callStatvfs) {
+                try {
+                    LibC.Statvfs vfsStat = new LibC.Statvfs();
+                    if (0 == LibC.INSTANCE.statvfs(path, vfsStat)) {
+                        totalInodes = vfsStat.f_files.longValue();
+                        freeInodes = vfsStat.f_ffree.longValue();
+                        // Per stavfs, these units are in fragments
+                        totalSpace = vfsStat.f_blocks.longValue() * vfsStat.f_frsize.longValue();
+                        usableSpace = vfsStat.f_bavail.longValue() * vfsStat.f_frsize.longValue();
+                        freeSpace = vfsStat.f_bfree.longValue() * vfsStat.f_frsize.longValue();
+                    } else {
+                        LOG.warn("Failed to get information to use statvfs. path: {}, Error code: {}", path,
+                                Native.getLastError());
+                    }
+                } catch (UnsatisfiedLinkError | NoClassDefFoundError e) {
+                    LOG.error("Failed to get file counts from statvfs. {}", e.getMessage());
                 }
-            } catch (UnsatisfiedLinkError | NoClassDefFoundError e) {
-                LOG.error("Failed to get file counts from statvfs. {}", e.getMessage());
-            }
-            // If native methods failed use JVM methods
-            if (totalSpace == 0L) {
-                File tmpFile = new File(path);
-                totalSpace = tmpFile.getTotalSpace();
-                usableSpace = tmpFile.getUsableSpace();
-                freeSpace = tmpFile.getFreeSpace();
+                // If native methods failed use JVM methods
+                if (totalSpace == 0L) {
+                    File tmpFile = new File(path);
+                    totalSpace = tmpFile.getTotalSpace();
+                    usableSpace = tmpFile.getUsableSpace();
+                    freeSpace = tmpFile.getFreeSpace();
+                }
             }
 
             fsList.add(new LinuxOSFileStore(name, volume, labelMap.getOrDefault(path, name), path, options, uuid,
                     logicalVolume, description, type, freeSpace, usableSpace, totalSpace, freeInodes, totalInodes));
         }
         return fsList;
+    }
+
+    static final Pattern MOUNTADDR_PATTERN = Pattern.compile("mountaddr\\=([\\w\\.\\-]+)");
+
+    private static void checkNfsPing(String options) throws IOException {
+        // parse address from options
+        Matcher m = MOUNTADDR_PATTERN.matcher(options);
+        if(m.find()) {
+            String ipAddress = m.group(1);
+            if(!InetAddress.getByName(ipAddress).isReachable(2000)) {
+                throw new IOException("mount address not reachable: "+ipAddress);
+            }
+        }
     }
 
     private static Map<String, String> queryLabelMap() {
